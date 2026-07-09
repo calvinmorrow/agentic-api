@@ -4,14 +4,17 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{GatewayExecutor, ToolError, ToolOutput};
+use super::codex::NamespaceMap;
+use super::{CodexNamespaceHandler, GatewayExecutor, ToolError, ToolOutput};
+use crate::types::io::OutputItem;
 use crate::types::io::output::FunctionToolCall;
-use crate::types::tools::ResponsesTool;
+use crate::types::tools::{CodexNamespaceMember, ResponsesTool};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolType {
     Function,
+    CodexNamespace,
     Mcp,
     /// Internal routing discriminant. Serializes as `"web_search"`.
     /// Note: the corresponding `ResponsesTool` wire tag is `"web_search_preview"`.
@@ -19,6 +22,13 @@ pub enum ToolType {
     WebSearch,
     FileSearch,
     CodeInterpreter,
+}
+
+impl ToolType {
+    #[must_use]
+    pub const fn is_gateway_owned(self) -> bool {
+        !matches!(self, Self::Function | Self::CodexNamespace)
+    }
 }
 
 /// Per-request routing entry keyed by the tool name the model will call.
@@ -53,6 +63,10 @@ pub struct GatewayDispatchResult {
 #[derive(Debug, Default)]
 pub struct ToolRegistry {
     entries: HashMap<String, ToolEntry>,
+    /// Built once from the declared tools, so `restore_final_payload_output`
+    /// and `restore_stream_event_value` — the latter called once per SSE line
+    /// during streaming — don't rebuild it on every call.
+    namespace_map: Option<NamespaceMap>,
 }
 
 impl ToolRegistry {
@@ -82,8 +96,12 @@ impl ToolRegistry {
         mut handler_for: impl FnMut(ToolType) -> Option<Arc<dyn GatewayExecutor>>,
     ) -> Self {
         let mut entries = HashMap::with_capacity(tools.len());
+        // Namespace members must be keyed by the same flat, model-visible name
+        // the model will call, so resolve them first — the same pure pass used
+        // to build the upstream request.
+        let resolved_tools = CodexNamespaceHandler.resolve_namespace_members(tools);
 
-        for tool in tools {
+        for tool in &resolved_tools {
             match tool {
                 ResponsesTool::Function(p) => {
                     // p.name is NonEmptyToolName — empty names are impossible here
@@ -148,10 +166,40 @@ impl ToolRegistry {
                         },
                     );
                 }
+                ResponsesTool::Namespace(p) => {
+                    // p's members already carry their flat, model-visible names
+                    // (see the `resolve_namespace_members` call above).
+                    let config = serde_json::to_value(p).expect("serialization of known struct is infallible");
+                    for member in &p.tools {
+                        let CodexNamespaceMember::Function(function) = member else {
+                            continue;
+                        };
+                        let name = function.name.as_str().to_owned();
+                        if entries
+                            .insert(
+                                name.clone(),
+                                ToolEntry {
+                                    tool_type: ToolType::CodexNamespace,
+                                    config: config.clone(),
+                                    server_label: Some(p.name.clone()),
+                                    handler: None,
+                                },
+                            )
+                            .is_some()
+                        {
+                            tracing::warn!(name = %name, namespace = %p.name, "duplicate tool name - previous definition overwritten");
+                        }
+                    }
+                }
+                ResponsesTool::Unknown => {
+                    tracing::debug!("unknown tool declared but skipped in registry");
+                }
             }
         }
 
-        Self { entries }
+        let namespace_map = CodexNamespaceHandler.build_namespace_map((!tools.is_empty()).then_some(tools));
+
+        Self { entries, namespace_map }
     }
 
     #[must_use]
@@ -169,8 +217,15 @@ impl ToolRegistry {
         self.entries.len()
     }
 
-    /// Returns the subset of `calls` whose names map to gateway-owned tools
-    /// (i.e. everything except `ToolType::Function`).
+    pub fn restore_final_payload_output(&self, output: &mut [OutputItem]) {
+        CodexNamespaceHandler.restore_output_items(output, self.namespace_map.as_ref());
+    }
+
+    pub fn restore_stream_event_value(&self, value: &mut Value) -> bool {
+        CodexNamespaceHandler.restore_response_value(value, self.namespace_map.as_ref())
+    }
+
+    /// Returns the subset of `calls` whose names map to gateway-owned tools.
     #[must_use]
     pub fn gateway_owned<'a>(&self, calls: &'a [FunctionToolCall]) -> Vec<&'a FunctionToolCall> {
         calls
@@ -178,13 +233,20 @@ impl ToolRegistry {
             .filter(|c| {
                 self.entries
                     .get(&c.name)
-                    .is_some_and(|e| e.tool_type != ToolType::Function)
+                    .is_some_and(|e| e.tool_type.is_gateway_owned())
             })
             .collect()
     }
 
-    /// Returns the subset of `calls` whose names map to client-owned function
-    /// tools (i.e. `ToolType::Function` or unknown names).
+    #[must_use]
+    pub fn is_gateway_owned_name(&self, name: &str) -> bool {
+        self.entries
+            .get(name)
+            .is_some_and(|entry| entry.tool_type.is_gateway_owned())
+    }
+
+    /// Returns the subset of `calls` whose names map to client-owned tools
+    /// (`Function`, Codex namespace members, or unknown names).
     #[must_use]
     pub fn client_owned<'a>(&self, calls: &'a [FunctionToolCall]) -> Vec<&'a FunctionToolCall> {
         calls
@@ -192,7 +254,7 @@ impl ToolRegistry {
             .filter(|c| {
                 self.entries
                     .get(&c.name)
-                    .is_none_or(|e| e.tool_type == ToolType::Function)
+                    .is_none_or(|e| !e.tool_type.is_gateway_owned())
             })
             .collect()
     }

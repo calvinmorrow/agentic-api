@@ -2,7 +2,7 @@
 
 > **References:** [Issue #54](https://github.com/vllm-project/agentic-api/issues/54),
 > [PR #67](https://github.com/vllm-project/agentic-api/pull/67)
-> **Owner:** @haoshan98 for Codex compatibility. @ashwing PR #67 owns the generic tool framework.
+> **Owner:** @haoshan98 for Codex compatibility. Latest `main` owns the generic tool framework lineage from PR #67.
 
 ---
 
@@ -10,13 +10,18 @@
 
 `agentic-api` should work as an upstream layer for Codex CLI while routing inference to vLLM-supported models.
 
-This PR is an MVP compatibility slice. It lets `agentic-api` accept and preserve Codex-used Responses traffic now,
-without waiting for the full generic tool framework from PR #67.
+Post-merge status: the generic tool framework from latest `main` is now present. Codex tool wire shapes live in the
+shared `ResponsesTool` type, and namespace flatten/restore behavior lives in `tool::normalize`. The typed stateful
+executor forwards only vLLM-compatible `function` tools upstream after namespace flattening. Raw `store=false` proxying
+remains transparent and is intentionally outside this PR's Codex namespace normalization scope.
+
+This PR remains an MVP compatibility slice. It lets `agentic-api` accept and preserve Codex-used Responses traffic while
+plugging the Codex-specific compatibility rules into the shared tool framework.
 
 The important split:
 
-- **This PR:** preserve Codex request/response shapes and continuation state.
-- **PR #67:** formalize generic tool normalization, execution, registry, ownership, and loop decisions.
+- **Codex compatibility:** preserve Codex request/response shapes and continuation state.
+- **Shared framework:** provide generic tool normalization, execution, registry, ownership, and loop decisions.
 
 ---
 
@@ -30,16 +35,15 @@ This PR should do only the minimum needed for Codex compatibility:
 - Preserve optional `namespace` on `function_call`.
 - Preserve `tool_search_call` and `custom_tool_call` shapes.
 - Preserve assistant tool-call items through `previous_response_id` rehydration.
-- Add model alias routing for Codex-facing model names to local vLLM models.
 - Add lightweight helper types/tests that document what #67 should formalize later.
 
 This PR should **not** build a second generic tool framework.
 
 ---
 
-## Deferred To PR #67
+## Shared Tool Framework Boundary
 
-PR #67 should own the formal shared tool system:
+Latest `main` owns the formal shared tool system:
 
 - `ToolHandler` / `Tool` trait shape.
 - Generic tool normalization before `call_inference()`.
@@ -48,8 +52,7 @@ PR #67 should own the formal shared tool system:
 - Requires-action / client-action loop decision.
 - Live `execution_loop` orchestration and streaming tool events.
 
-The helper types in this PR are temporary. They express Codex requirements, but the canonical versions should come
-from #67. After #67 lands, this slice should plug into or be refactored onto those abstractions.
+Codex-specific rules should stay plugged into those abstractions rather than reintroducing a parallel framework.
 
 ---
 
@@ -117,19 +120,6 @@ submits the matching tool output item, and `previous_response_id` should rebuild
 
 ---
 
-## Model Aliases
-
-Model aliases route Codex-facing model names to local vLLM models:
-
-```toml
-[model_aliases]
-codex-compatible = "qwen3-coder"
-```
-
-Alias resolution is only model routing. It must not imply approval, auto-review, or human-confirmation behavior.
-
----
-
 ## Test Plan
 
 Current PR tests should cover:
@@ -140,7 +130,6 @@ Current PR tests should cover:
 - `tool_search_call` and `custom_tool_call` remain raw-compatible.
 - Unknown input/output items remain raw JSON.
 - `previous_response_id` rehydrates assistant tool calls before tool outputs.
-- Model aliases resolve on executor and proxy paths.
 
 Post-#67 tests should prove the same behavior through the formal tool framework.
 

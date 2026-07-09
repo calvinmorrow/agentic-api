@@ -10,7 +10,7 @@ use std::sync::Arc;
 use async_stream::stream;
 use either::Either;
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::gateway::{
     append_gateway_calls_to_new_input, append_output_items_to_input, append_tool_outputs,
@@ -58,7 +58,12 @@ fn accumulate_usage(total: &mut Option<ResponseUsage>, usage: Option<ResponseUsa
 }
 
 fn error_sse_chunk(message: &str) -> String {
-    let event = serde_json::json!({ "error": message });
+    let event = serde_json::json!({
+        "type": "error",
+        "error": {
+            "message": message,
+        },
+    });
     let event_json = serialize_to_string(&event).unwrap_or_else(|_| "{\"error\":\"stream error\"}".to_owned());
     format!("data: {event_json}\n\n")
 }
@@ -102,22 +107,23 @@ async fn run_until_gateway_tools_complete(
     stream_upstream: bool,
     stream_events: Option<&mpsc::UnboundedSender<String>>,
 ) -> ExecutorResult<(ResponsePayload, RequestContext)> {
-    let registry = ctx
+    let registry: ToolRegistry = ctx
         .enriched_request
         .tools
         .as_ref()
         .map_or_else(ToolRegistry::default, |tools| {
             ToolRegistry::build_with_handlers(tools, |tool_type| exec_ctx.gateway_executors.get(tool_type))
         });
-    let mut combined_output = Vec::new();
-    let mut combined_usage = None;
+    let mut combined_output: Vec<crate::OutputItem> = Vec::new();
+    let mut combined_usage: Option<ResponseUsage> = None;
 
     for _ in 0..MAX_GATEWAY_TOOL_ROUNDS {
-        let mut payload = if stream_upstream {
-            fetch_stream_payload(&ctx, exec_ctx, auth).await?
+        let mut payload: ResponsePayload = if stream_upstream {
+            fetch_stream_payload(&ctx, exec_ctx, auth, &registry, stream_events).await?
         } else {
             fetch_blocking_payload(&ctx, exec_ctx, auth).await?
         };
+        registry.restore_final_payload_output(&mut payload.output);
         accumulate_usage(&mut combined_usage, payload.usage);
         let current_output = std::mem::take(&mut payload.output);
         let has_client_owned_calls = has_client_owned_calls(&current_output, &registry);
@@ -147,7 +153,7 @@ async fn run_until_gateway_tools_complete(
         }
 
         combined_output.extend(public_output);
-        ctx.enriched_request.tool_choice = ToolChoice::Auto;
+        ctx.enriched_request.tool_choice = Some(ToolChoice::Auto);
         append_output_items_to_input(&mut ctx.enriched_request.input, &current_output);
         append_gateway_calls_to_new_input(&mut ctx, &current_output, &registry);
         append_tool_outputs(
@@ -211,7 +217,7 @@ fn run_stream(ctx: RequestContext, exec_ctx: Arc<ExecutionContext>, auth: Option
                             yield DONE_MARKER.to_string();
                         }
                         Ok(Ok((payload, ctx))) => {
-                            yield payload.as_responses_chunk();
+                            yield payload.as_terminal_response_chunk();
                             yield DONE_MARKER.to_string();
 
                             let ch = exec_ctx.conv_handler.clone();
@@ -277,6 +283,15 @@ impl ExecuteRequest {
     /// # Errors
     /// Returns [`ExecutorError`] if rehydration or (non-streaming) LLM inference fails.
     pub async fn run(self) -> ExecutorResult<Either<ResponsePayload, BoxStream>> {
+        debug!(
+            model = %self.payload.model,
+            store = self.payload.store,
+            stream = self.payload.stream,
+            has_previous_response_id = self.payload.previous_response_id.is_some(),
+            has_conversation_id = self.payload.conversation_id.is_some(),
+            tools = self.payload.tools.as_ref().map_or(0, Vec::len),
+            "executor received responses request"
+        );
         let ctx = rehydrate_conversation(self.payload, &self.exec_ctx).await?;
         if ctx.original_request.stream {
             Ok(Either::Right(run_stream(ctx, self.exec_ctx, self.client_auth)))
