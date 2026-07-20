@@ -584,6 +584,7 @@ async fn execute_runs_web_search_and_sends_tool_output_back_to_model() {
         max_output_tokens: Some(1024),
         truncation: None,
         metadata: None,
+        parallel_tool_calls: None,
         cache_salt: None,
     };
 
@@ -668,6 +669,7 @@ async fn execute_relaxes_forced_tool_choice_after_web_search_result() {
         max_output_tokens: Some(1024),
         truncation: None,
         metadata: None,
+        parallel_tool_calls: None,
         cache_salt: None,
     };
 
@@ -716,6 +718,7 @@ async fn execute_returns_mixed_client_tool_calls_without_followup_model_request(
         max_output_tokens: Some(1024),
         truncation: None,
         metadata: None,
+        parallel_tool_calls: None,
         cache_salt: None,
     };
 
@@ -763,6 +766,7 @@ async fn execute_returns_mixed_client_tool_calls_without_followup_model_request(
         max_output_tokens: Some(1024),
         truncation: None,
         metadata: None,
+        parallel_tool_calls: None,
         cache_salt: None,
     };
     let continuation = ExecuteRequest::new(continuation_payload, exec_ctx).run().await.unwrap();
@@ -833,6 +837,7 @@ async fn execute_accumulates_usage_across_web_search_model_rounds() {
         max_output_tokens: Some(1024),
         truncation: None,
         metadata: None,
+        parallel_tool_calls: None,
         cache_salt: None,
     };
 
@@ -876,6 +881,7 @@ async fn stream_emits_web_search_lifecycle_events_before_final_payload() {
         max_output_tokens: Some(1024),
         truncation: None,
         metadata: None,
+        parallel_tool_calls: None,
         cache_salt: None,
     };
 
@@ -958,6 +964,7 @@ async fn stream_hides_web_search_function_events_when_name_arrives_on_done() {
         max_output_tokens: Some(1024),
         truncation: None,
         metadata: None,
+        parallel_tool_calls: None,
         cache_salt: None,
     };
 
@@ -1024,6 +1031,7 @@ async fn execute_runs_multiple_web_search_calls_concurrently() {
         max_output_tokens: Some(1024),
         truncation: None,
         metadata: None,
+        parallel_tool_calls: None,
         cache_salt: None,
     };
 
@@ -1072,6 +1080,7 @@ async fn execute_feeds_web_search_execution_errors_back_to_model() {
         max_output_tokens: Some(1024),
         truncation: None,
         metadata: None,
+        parallel_tool_calls: None,
         cache_salt: None,
     };
 
@@ -1122,6 +1131,7 @@ async fn execute_returns_incomplete_after_max_gateway_tool_rounds() {
         max_output_tokens: Some(1024),
         truncation: None,
         metadata: None,
+        parallel_tool_calls: None,
         cache_salt: None,
     };
 
@@ -1172,6 +1182,7 @@ async fn execute_feeds_invalid_web_search_arguments_back_to_model() {
         max_output_tokens: Some(1024),
         truncation: None,
         metadata: None,
+        parallel_tool_calls: None,
         cache_salt: None,
     };
 
@@ -1229,6 +1240,7 @@ async fn execute_runs_large_gateway_fanout_without_hard_cap() {
         max_output_tokens: Some(1024),
         truncation: None,
         metadata: None,
+        parallel_tool_calls: None,
         cache_salt: None,
     };
 
@@ -1292,6 +1304,7 @@ async fn stream_error_events_escape_error_messages() {
         max_output_tokens: Some(1024),
         truncation: None,
         metadata: None,
+        parallel_tool_calls: None,
         cache_salt: None,
     };
 
@@ -1367,6 +1380,7 @@ async fn incomplete_turn_persists_a_consistent_conversation_for_continuation() {
         max_output_tokens: Some(1024),
         truncation: None,
         metadata: None,
+        parallel_tool_calls: None,
         cache_salt: None,
     };
 
@@ -1393,6 +1407,7 @@ async fn incomplete_turn_persists_a_consistent_conversation_for_continuation() {
         max_output_tokens: Some(1024),
         truncation: None,
         metadata: None,
+        parallel_tool_calls: None,
         cache_salt: None,
     };
     let _ = ExecuteRequest::new(continuation_payload, exec_ctx).run().await.unwrap();
@@ -1463,6 +1478,7 @@ async fn stream_returns_incomplete_after_max_gateway_tool_rounds() {
         max_output_tokens: Some(1024),
         truncation: None,
         metadata: None,
+        parallel_tool_calls: None,
         cache_salt: None,
     };
 
