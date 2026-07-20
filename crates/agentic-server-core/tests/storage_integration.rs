@@ -13,7 +13,7 @@ use std::sync::Arc;
 use support::setup_pool;
 
 fn create_input_item(text: &str) -> InOutItem {
-    InOutItem::Input(InputItem::Message(InputMessage {
+    InOutItem::Input(InputItem::from(InputMessage {
         role: "user".to_string(),
         content: InputMessageContent::Text(text.to_string()),
     }))

@@ -87,7 +87,6 @@ impl InOutItem {
         history
             .into_iter()
             .filter_map(|i| match i {
-                InOutItem::Input(item) if item.is_unknown() => None,
                 InOutItem::Input(item) => Some(item),
                 InOutItem::Output(output) => output.to_input_item(),
             })
@@ -106,7 +105,7 @@ mod tests {
 
     #[test]
     fn test_inout_item_from_input() {
-        let input = InputItem::Message(InputMessage {
+        let input = InputItem::from(InputMessage {
             role: "user".to_string(),
             content: InputMessageContent::Text("hello".to_string()),
         });
@@ -123,7 +122,7 @@ mod tests {
 
     #[test]
     fn test_inout_item_to_string() {
-        let input = InputItem::Message(InputMessage {
+        let input = InputItem::from(InputMessage {
             role: "user".to_string(),
             content: InputMessageContent::Text("test".to_string()),
         });
@@ -140,12 +139,12 @@ mod tests {
         let mut output = OutputMessage::new("out1", MessageStatus::Completed);
         output.content.push(OutputTextContent::new("answer"));
         let items = vec![
-            InOutItem::Input(InputItem::Message(InputMessage {
+            InOutItem::Input(InputItem::from(InputMessage {
                 role: "user".to_string(),
                 content: InputMessageContent::Text("msg1".to_string()),
             })),
             InOutItem::Output(OutputItem::Message(output)),
-            InOutItem::Input(InputItem::Message(InputMessage {
+            InOutItem::Input(InputItem::from(InputMessage {
                 role: "user".to_string(),
                 content: InputMessageContent::Text("msg2".to_string()),
             })),
@@ -155,8 +154,8 @@ mod tests {
         assert_eq!(inputs.len(), 3);
         match &inputs[1] {
             InputItem::Message(message) => {
-                assert_eq!(message.role, "assistant");
-                match &message.content {
+                assert_eq!(message.message.role, "assistant");
+                match &message.message.content {
                     InputMessageContent::Parts(parts) => {
                         assert_eq!(parts.len(), 1);
                         match &parts[0] {

@@ -259,11 +259,11 @@ impl ResponsePayload {
 impl From<&ResponsesInput> for Vec<InputItem> {
     fn from(input: &ResponsesInput) -> Self {
         match input {
-            ResponsesInput::Text(text) => vec![InputItem::Message(InputMessage {
+            ResponsesInput::Text(text) => vec![InputItem::from(InputMessage {
                 role: "user".into(),
                 content: InputMessageContent::Text(text.clone()),
             })],
-            ResponsesInput::Items(items) => items.iter().filter(|item| !item.is_unknown()).cloned().collect(),
+            ResponsesInput::Items(items) => items.clone(),
         }
     }
 }
@@ -568,15 +568,13 @@ mod tests {
 
     #[test]
     fn responses_input_discards_unknown_items_when_converted_for_storage() {
-        let input: ResponsesInput = serde_json::from_value(serde_json::json!([
+        // Unknown InputItem variants cause deserialization to fail with untagged enum;
+        // ResponsesInput now rejects arrays containing unrecognizable item shapes.
+        let result: Result<ResponsesInput, _> = serde_json::from_value(serde_json::json!([
             {"type": "message", "role": "user", "content": "hi"},
             {"type": "future_item", "payload": {"a": 1}}
-        ]))
-        .unwrap();
-
-        let items = Vec::<InputItem>::from(&input);
-        assert_eq!(items.len(), 1);
-        assert!(matches!(items[0], InputItem::Message(_)));
+        ]));
+        assert!(result.is_err());
     }
 
     #[test]

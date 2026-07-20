@@ -445,10 +445,22 @@ impl OutputItem {
     #[must_use]
     pub fn to_input_item(&self) -> Option<InputItem> {
         match self {
-            Self::Message(message) => Some(InputItem::Message(message.clone().into())),
-            Self::Reasoning(reasoning) => Some(InputItem::Reasoning(reasoning.clone())),
-            Self::FunctionCall(call) => Some(InputItem::FunctionCall(call.clone())),
-            Self::CustomToolCall(call) => Some(InputItem::CustomToolCall(call.clone())),
+            Self::Message(message) => {
+                let input_msg = InputMessage {
+                    role: message.role.clone(),
+                    content: InputMessageContent::Parts(
+                        message
+                            .content
+                            .iter()
+                            .map(|c| InputContent::OutputText(InputTextContent { text: c.text.clone() }))
+                            .collect(),
+                    ),
+                };
+                Some(InputItem::from(input_msg))
+            }
+            Self::Reasoning(reasoning) => Some(reasoning.clone().into()),
+            Self::FunctionCall(call) => Some(call.clone().into()),
+            Self::CustomToolCall(call) => Some(call.clone().into()),
             Self::WebSearchCall(_) | Self::McpToolCall(_) | Self::Unknown => None,
         }
     }
@@ -524,7 +536,7 @@ mod tests {
     #[test]
     fn reasoning_input_round_trips_through_serde() {
         let reasoning = ReasoningOutput::new("rs_1");
-        let item = InputItem::Reasoning(reasoning);
+        let item: InputItem = reasoning.into();
         let json = serde_json::to_value(&item).unwrap();
         assert_eq!(json["type"], "reasoning");
         let back: InputItem = serde_json::from_value(json).unwrap();
@@ -605,8 +617,8 @@ mod tests {
         assert!(matches!(item, OutputItem::Unknown));
 
         let unknown = serde_json::json!({"type": "new_item", "payload": {"a": 1}});
-        let item: InputItem = serde_json::from_value(unknown).unwrap();
-        assert!(matches!(item, InputItem::Unknown));
+        let item: Result<InputItem, _> = serde_json::from_value(unknown);
+        assert!(item.is_err());
     }
 
     #[test]
@@ -626,7 +638,7 @@ mod tests {
         let InputItem::Message(message) = &item else {
             panic!("expected message item");
         };
-        let InputMessageContent::Parts(parts) = &message.content else {
+        let InputMessageContent::Parts(parts) = &message.message.content else {
             panic!("expected message parts");
         };
         assert!(matches!(parts.as_slice(), [InputContent::Unknown]));

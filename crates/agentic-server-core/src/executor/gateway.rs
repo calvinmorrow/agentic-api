@@ -8,7 +8,7 @@ use crate::executor::error::{ExecutorError, ExecutorResult};
 use crate::executor::request::RequestContext;
 use crate::tool::{GatewayDispatchResult, ToolError, ToolOutput, ToolRegistry, ToolType};
 use crate::types::io::output::{FunctionToolCall, GatewayCallStatus};
-use crate::types::io::{InputItem, OutputItem, ResponsesInput};
+use crate::types::io::{FunctionToolResultMessage, FunctionToolResultOutput, InputItem, OutputItem, ResponsesInput};
 use crate::utils::common::serialize_to_string;
 
 /// Max gateway tool calls executing at once within a round. A sliding window:
@@ -174,7 +174,10 @@ async fn execute_gateway_call_with_timeout(
     let public_output = gateway_public_output(dispatch.tool_type, &call, &output, status);
     Ok(GatewayCallResult {
         call,
-        input_item: InputItem::FunctionCallOutput(output.into()),
+        input_item: InputItem::from(FunctionToolResultMessage {
+            call_id: output.call_id,
+            output: FunctionToolResultOutput::Text(output.output),
+        }),
         public_output,
     })
 }
@@ -418,15 +421,15 @@ pub(super) fn append_gateway_calls_to_new_input(
         let OutputItem::FunctionCall(call) = item else {
             return None;
         };
-        is_gateway_owned_call(call, registry).then(|| InputItem::FunctionCall(call.clone()))
+        is_gateway_owned_call(call, registry).then(|| InputItem::from(call.clone()))
     }));
 }
 
 #[cfg(test)]
 mod tests {
     use super::{GatewayCallResult, LoopDecision, classify_round};
-    use crate::types::io::InputItem;
     use crate::types::io::output::FunctionToolCall;
+    use crate::types::io::{FunctionToolResultMessage, FunctionToolResultOutput, InputItem};
 
     const MAX: usize = 10;
 
@@ -441,13 +444,10 @@ mod tests {
         };
         GatewayCallResult {
             call,
-            input_item: InputItem::FunctionCallOutput(
-                crate::tool::ToolOutput {
-                    call_id: "call".to_owned(),
-                    output: "{}".to_owned(),
-                }
-                .into(),
-            ),
+            input_item: InputItem::from(FunctionToolResultMessage {
+                call_id: "call".to_owned(),
+                output: FunctionToolResultOutput::Text("{}".to_owned()),
+            }),
             public_output: None,
         }
     }

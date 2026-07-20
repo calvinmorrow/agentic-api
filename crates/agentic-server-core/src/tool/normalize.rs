@@ -1,5 +1,5 @@
 use crate::types::io::FunctionTool;
-use crate::types::io::input::FunctionToolResultMessage;
+use crate::types::io::input::{FunctionToolResultMessage, FunctionToolResultOutput};
 use crate::types::tools::ResponsesTool;
 use crate::utils::common::serialize_to_value_or_custom_default;
 
@@ -96,7 +96,7 @@ impl From<ToolOutput> for FunctionToolResultMessage {
     fn from(o: ToolOutput) -> Self {
         Self {
             call_id: o.call_id,
-            output: o.output,
+            output: FunctionToolResultOutput::Text(o.output),
         }
     }
 }

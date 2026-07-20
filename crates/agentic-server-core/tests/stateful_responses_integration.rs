@@ -9,7 +9,9 @@ use agentic_core::executor::execute;
 use agentic_core::executor::request::RequestContext;
 use agentic_core::types::request_response::RequestPayload;
 use agentic_core::types::tools::{FunctionToolParam, NonEmptyToolName};
-use agentic_core::{FunctionToolResultMessage, InputItem, ResponsesInput, ResponsesTool, ToolChoice};
+use agentic_core::{
+    FunctionToolResultMessage, FunctionToolResultOutput, InputItem, ResponsesInput, ResponsesTool, ToolChoice,
+};
 use either::Either;
 use futures::StreamExt;
 use serde_json::Value;
@@ -386,9 +388,9 @@ async fn test_previous_response_id_rehydrates_function_call_before_tool_output()
     let p1 = unwrap_blocking(execute(first, Arc::clone(&fixture.exec_ctx)).await.expect("first turn"));
 
     let mut second = make_request("ignored", true, false, Some(p1.id), None);
-    second.input = ResponsesInput::Items(vec![InputItem::FunctionCallOutput(FunctionToolResultMessage {
+    second.input = ResponsesInput::Items(vec![InputItem::from(FunctionToolResultMessage {
         call_id: "call_1".to_string(),
-        output: "{\"stdout\":\"/workspace\"}".to_string(),
+        output: FunctionToolResultOutput::Text("{\"stdout\":\"/workspace\"}".to_string()),
     })]);
     let _p2 = unwrap_blocking(
         execute(second, Arc::clone(&fixture.exec_ctx))
@@ -739,9 +741,9 @@ fn upstream_mcp_fixture_call(id: &str, call_id: &str, name: &str, arguments: &st
 }
 
 fn tool_output(call_id: &str, output: &str) -> InputItem {
-    InputItem::FunctionCallOutput(FunctionToolResultMessage {
+    InputItem::from(FunctionToolResultMessage {
         call_id: call_id.to_string(),
-        output: output.to_string(),
+        output: FunctionToolResultOutput::Text(output.to_string()),
     })
 }
 
