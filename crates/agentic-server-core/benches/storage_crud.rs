@@ -12,7 +12,7 @@ fn next_id() -> String {
 }
 
 fn create_test_items() -> Vec<InOutItem> {
-    let input_item = InputItem::Message(InputMessage {
+    let input_item = InputItem::from(InputMessage {
         role: "user".to_string(),
         content: InputMessageContent::Text("Test message".to_string()),
     });
