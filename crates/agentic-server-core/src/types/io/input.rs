@@ -48,25 +48,31 @@ pub enum InputMessageContent {
     Parts(Vec<InputContent>),
 }
 
-/// Function-call result output — accepts a plain string or a content-parts array.
+/// Function-call result output — accepts a plain string, a content-parts array,
+/// or a raw JSON object.
 ///
 /// litellm (and the `OpenAI` Responses API spec) may emit `output` as either:
 /// - a bare `String`, or
-/// - a `List[ContentItem]` such as `[{"type": "input_text", "text": "..."}]`.
+/// - a `List[ContentItem]` such as `[{"type": "input_text", "text": "..."}]`, or
+/// - a raw JSON object like `{}` or `{"status": "ok"}`.
 ///
-/// The untagged enum tries `Text` first (fast path for the majority of callers)
-/// and falls back to `Parts` when serde encounters an array.
+/// The untagged enum tries `Text` first (fast path for the majority of callers),
+/// then `Parts` for arrays, then falls back to `Object` for plain JSON objects.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FunctionToolResultOutput {
     Text(String),
     Parts(Vec<InputContent>),
+    /// Raw JSON object (e.g. `{}` or `{"status": "ok"}`) — litellm may emit
+    /// non-string, non-array outputs for tool results.
+    Object(Value),
 }
 
 impl FunctionToolResultOutput {
     /// Return the plain-text representation of this output.
     ///
     /// - `Text(s)` → `s`
+    /// - `Object(v)` → JSON stringified `v`
     /// - `Parts` with a single `InputText` → its `text`
     /// - `Parts` with multiple items → concatenated `input_text` / `output_text` text values
     /// - `Parts` with no text items → empty string
@@ -74,6 +80,7 @@ impl FunctionToolResultOutput {
     pub fn to_text(&self) -> String {
         match self {
             Self::Text(s) => s.clone(),
+            Self::Object(v) => serde_json::to_string(v).unwrap_or_default(),
             Self::Parts(parts) => parts
                 .iter()
                 .filter_map(|part| match part {
@@ -104,6 +111,7 @@ pub struct CustomToolCallOutputMessage {
 
 /// Wire wrapper for `function_call_output` input items.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InputItemFunctionCallOutput {
     #[serde(rename = "type")]
     #[serde(default = "default_fco_type")]
@@ -313,7 +321,7 @@ mod tests {
         let output: FunctionToolResultOutput = serde_json::from_str(json).expect("deserialize string");
         match output {
             FunctionToolResultOutput::Text(s) => assert_eq!(s, "simple text result"),
-            FunctionToolResultOutput::Parts(_) => panic!("expected Text variant"),
+            FunctionToolResultOutput::Parts(_) | FunctionToolResultOutput::Object(_) => panic!("expected Text variant"),
         }
     }
 
@@ -329,7 +337,7 @@ mod tests {
                     other => panic!("expected InputText, got {other:?}"),
                 }
             }
-            FunctionToolResultOutput::Text(_) => panic!("expected Parts variant"),
+            FunctionToolResultOutput::Text(_) | FunctionToolResultOutput::Object(_) => panic!("expected Parts variant"),
         }
     }
 
@@ -341,7 +349,7 @@ mod tests {
             FunctionToolResultOutput::Parts(parts) => {
                 assert_eq!(parts.len(), 2);
             }
-            FunctionToolResultOutput::Text(_) => panic!("expected Parts variant"),
+            FunctionToolResultOutput::Text(_) | FunctionToolResultOutput::Object(_) => panic!("expected Parts variant"),
         }
     }
 
@@ -355,7 +363,7 @@ mod tests {
                 matches!(parts[0], InputContent::InputText(_));
                 matches!(parts[1], InputContent::Unknown);
             }
-            FunctionToolResultOutput::Text(_) => panic!("expected Parts variant"),
+            FunctionToolResultOutput::Text(_) | FunctionToolResultOutput::Object(_) => panic!("expected Parts variant"),
         }
     }
 
