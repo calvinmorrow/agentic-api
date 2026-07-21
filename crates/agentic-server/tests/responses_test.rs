@@ -103,6 +103,41 @@ async fn test_store_false_proxies_json_to_vllm() {
 }
 
 #[tokio::test]
+async fn test_executor_wraps_scalar_assistant_content_as_output_text() {
+    let (llm_url, requests, _h1) = spawn_mock_vllm_json_capture().await;
+    let (gw_url, _h2) = spawn_gateway(test_state(&test_config(&llm_url))).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{gw_url}/v1/responses"))
+        .json(&serde_json::json!({
+            "model": "test",
+            "input": [
+                {"role": "system", "content": "{\"kind\":\"system\"}"},
+                {"role": "developer", "content": "{\"kind\":\"developer\"}"},
+                {"role": "user", "content": "{\"kind\":\"user\"}"},
+                {"role": "assistant", "content": "{\"kind\":\"assistant\"}"}
+            ],
+            "store": true,
+            "stream": false
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 1);
+    let input = requests[0]["input"].as_array().expect("upstream input array");
+    assert_eq!(input[0]["content"], "{\"kind\":\"system\"}");
+    assert_eq!(input[1]["content"], "{\"kind\":\"developer\"}");
+    assert_eq!(input[2]["content"], "{\"kind\":\"user\"}");
+    assert_eq!(
+        input[3]["content"],
+        serde_json::json!([{"type": "output_text", "text": "{\"kind\":\"assistant\"}"}])
+    );
+}
+
+#[tokio::test]
 async fn test_executor_forwards_litellm_function_call_output_content_parts() {
     // LiteLLM submits function call output as Responses input content parts. The
     // executor path must preserve those objects when it serializes the upstream

@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 
 use super::output::CustomToolCall;
@@ -35,10 +36,28 @@ pub enum InputContent {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct InputMessage {
     pub role: String,
     pub content: InputMessageContent,
+}
+
+impl Serialize for InputMessage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("InputMessage", 2)?;
+        state.serialize_field("role", &self.role)?;
+        match (self.role.as_str(), &self.content) {
+            ("assistant", InputMessageContent::Text(text)) => {
+                let content = vec![InputContent::OutputText(InputTextContent { text: text.clone() })];
+                state.serialize_field("content", &content)?;
+            }
+            (_, content) => state.serialize_field("content", content)?,
+        }
+        state.end()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
