@@ -25,8 +25,8 @@ use tokio_util::sync::CancellationToken;
 use agentic_core::executor::{ConversationHandler, ExecutionContext, ResponseHandler};
 use agentic_core::proxy::ProxyState;
 use agentic_core::storage::{ConversationStore, ResponseStore, create_pool_with_schema};
-use agentic_core::tool::WebSearchHandler;
-use agentic_server::app::AppState;
+use agentic_core::tool::{WebSearchHandler, model_visible_namespace_member_name};
+use agentic_server::app::{AppState, WebSocketTracker};
 
 use common::{spawn_gateway, test_config};
 
@@ -93,6 +93,10 @@ impl Drop for MockYouSearchServer {
 
 enum MockResponse {
     Static(String),
+    Gated {
+        response: String,
+        release: oneshot::Receiver<()>,
+    },
     Hanging {
         first_chunk: String,
         drop_tx: oneshot::Sender<()>,
@@ -144,6 +148,16 @@ impl MockResponsesServer {
         (server, drop_rx)
     }
 
+    async fn start_gated(response: String) -> (Self, oneshot::Sender<()>) {
+        let (release_tx, release_rx) = oneshot::channel();
+        let server = Self::start_with_responses(vec![MockResponse::Gated {
+            response,
+            release: release_rx,
+        }])
+        .await;
+        (server, release_tx)
+    }
+
     async fn start_with_responses(responses: Vec<MockResponse>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -163,6 +177,10 @@ impl MockResponsesServer {
                     let response = queue.lock().await.pop_front().expect("mock response queue exhausted");
                     let body = match response {
                         MockResponse::Static(response) => axum::body::Body::from(response),
+                        MockResponse::Gated { response, release } => {
+                            let _ = release.await;
+                            axum::body::Body::from(response)
+                        }
                         MockResponse::Hanging { first_chunk, drop_tx } => {
                             axum::body::Body::from_stream(HangingSse::new(first_chunk, drop_tx))
                         }
@@ -254,6 +272,7 @@ async fn storage_backed_state_with_web_search(llm_url: &str, web_search_base_url
         proxy_state,
         exec_ctx,
         shutdown_token: CancellationToken::new(),
+        websocket_tracker: WebSocketTracker::default(),
         llm_api_base: config.llm_api_base,
         openai_api_key: config.openai_api_key,
     };
@@ -322,6 +341,39 @@ async fn recv_close_or_end(ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>) 
     match message {
         None | Some(Ok(Message::Close(_)) | Err(_)) => {}
         Some(Ok(message)) => panic!("expected websocket close, got {message:?}"),
+    }
+}
+
+async fn recv_clean_close(ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>) {
+    let message = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+        .await
+        .expect("timed out waiting for clean websocket close");
+    match message {
+        Some(Ok(Message::Close(_))) => ws.flush().await.expect("failed to acknowledge websocket close"),
+        None => panic!("websocket ended without a close frame"),
+        Some(Err(error)) => panic!("websocket close failed: {error}"),
+        Some(Ok(message)) => panic!("expected websocket close, got {message:?}"),
+    }
+}
+
+async fn send_ping_and_wait_for_pong(ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>, payload: Bytes) {
+    ws.send(Message::Ping(payload.clone())).await.unwrap();
+    loop {
+        let message = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
+            .await
+            .expect("timed out waiting for websocket pong")
+            .expect("websocket should yield a message")
+            .expect("websocket message should be ok");
+        match message {
+            Message::Pong(actual) => {
+                assert_eq!(actual, payload);
+                break;
+            }
+            Message::Ping(_) | Message::Frame(_) => {}
+            Message::Text(text) => panic!("unexpected text before pong: {text}"),
+            Message::Close(frame) => panic!("websocket closed before pong: {frame:?}"),
+            Message::Binary(_) => panic!("unexpected binary websocket message"),
+        }
     }
 }
 
@@ -805,6 +857,65 @@ async fn test_websocket_restores_namespace_tool_call_events() {
 }
 
 #[tokio::test]
+async fn test_websocket_bounds_and_restores_long_namespace_tool_name() {
+    let namespace = "mcp__codex_apps__github";
+    let member = "_remove_reaction_from_pr_review_comment";
+    let upstream_name = model_visible_namespace_member_name(namespace, member);
+    let mock = MockResponsesServer::start(vec![sse_function_call_response(
+        "resp_upstream_long_namespace",
+        &upstream_name,
+    )])
+    .await;
+    let fixture = storage_backed_state(&mock.url).await;
+    let (gateway_url, _gateway) = spawn_gateway(fixture.state.clone()).await;
+    let mut ws = connect_responses_ws(&gateway_url).await;
+
+    send_json(
+        &mut ws,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "input": "use the long namespace tool",
+            "tools": [{
+                "type": "namespace",
+                "name": namespace,
+                "tools": [{
+                    "type": "function",
+                    "name": member,
+                    "parameters": {"type": "object"}
+                }]
+            }],
+            "store": true,
+            "stream": true
+        }),
+    )
+    .await;
+
+    let events = recv_until_completed(&mut ws).await;
+    let added = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.added")
+        .unwrap();
+    let done = events
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .unwrap();
+    assert_eq!(added["item"]["namespace"], namespace);
+    assert_eq!(added["item"]["name"], member);
+    assert_eq!(done["item"]["namespace"], namespace);
+    assert_eq!(done["item"]["name"], member);
+
+    let completed = events.last().unwrap();
+    assert_eq!(completed["response"]["output"][0]["namespace"], namespace);
+    assert_eq!(completed["response"]["output"][0]["name"], member);
+
+    let requests = mock.request_bodies().await;
+    let forwarded_name = requests[0]["tools"][0]["name"].as_str().unwrap();
+    assert_eq!(forwarded_name, upstream_name);
+    assert_eq!(forwarded_name.chars().count(), 64);
+}
+
+#[tokio::test]
 async fn test_websocket_custom_tool_round_trip_and_continuation() {
     let mock = MockResponsesServer::start(vec![
         sse_custom_tool_call_response(),
@@ -1153,25 +1264,7 @@ async fn test_websocket_ping_returns_pong_without_upstream_request() {
     let (gateway_url, _gateway) = spawn_gateway(fixture.state.clone()).await;
     let mut ws = connect_responses_ws(&gateway_url).await;
 
-    ws.send(Message::Ping(Bytes::from_static(b"ping"))).await.unwrap();
-
-    loop {
-        let message = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
-            .await
-            .expect("timed out waiting for websocket pong")
-            .expect("websocket should yield a message")
-            .expect("websocket message should be ok");
-        match message {
-            Message::Pong(payload) => {
-                assert_eq!(payload, Bytes::from_static(b"ping"));
-                break;
-            }
-            Message::Ping(_) | Message::Frame(_) => {}
-            Message::Text(text) => panic!("unexpected text websocket message: {text}"),
-            Message::Close(frame) => panic!("websocket closed before pong: {frame:?}"),
-            Message::Binary(_) => panic!("unexpected binary websocket message"),
-        }
-    }
+    send_ping_and_wait_for_pong(&mut ws, Bytes::from_static(b"ping")).await;
 
     assert!(mock.request_bodies().await.is_empty());
 }
@@ -1188,6 +1281,54 @@ async fn test_websocket_shutdown_token_closes_idle_connection() {
 
     recv_close_or_end(&mut ws).await;
     assert!(mock.request_bodies().await.is_empty());
+}
+
+#[tokio::test]
+async fn test_websocket_shutdown_drains_active_response_before_closing() {
+    let (mock, release) =
+        MockResponsesServer::start_gated(sse_response("resp_upstream_shutdown", "msg_upstream_shutdown", "DONE")).await;
+    let fixture = storage_backed_state(&mock.url).await;
+    let shutdown_token = fixture.state.shutdown_token.clone();
+    let websocket_tracker = fixture.state.websocket_tracker.clone();
+    let (gateway_url, _gateway) = spawn_gateway(fixture.state.clone()).await;
+    let mut ws = connect_responses_ws(&gateway_url).await;
+
+    send_json(
+        &mut ws,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "input": [{"type": "message", "role": "user", "content": "hi"}],
+            "store": true,
+            "stream": true
+        }),
+    )
+    .await;
+    wait_for_request_count(&mock, 1).await;
+
+    shutdown_token.cancel();
+    send_json(
+        &mut ws,
+        json!({
+            "type": "response.create",
+            "model": "test-model",
+            "input": "must not start during shutdown",
+            "store": true,
+            "stream": true
+        }),
+    )
+    .await;
+    let barrier = Bytes::from_static(b"shutdown-request-received");
+    send_ping_and_wait_for_pong(&mut ws, barrier).await;
+    release.send(()).unwrap();
+
+    let events = recv_until_completed(&mut ws).await;
+    assert_eq!(events.last().unwrap()["type"], "response.completed");
+    recv_clean_close(&mut ws).await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), websocket_tracker.wait_until_idle())
+        .await
+        .expect("server did not receive the websocket close acknowledgement");
+    assert_eq!(mock.request_bodies().await.len(), 1);
 }
 
 #[tokio::test]

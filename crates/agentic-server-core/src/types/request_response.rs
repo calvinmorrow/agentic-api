@@ -246,7 +246,7 @@ impl ResponsePayload {
         format!("data: {json_str}\n\n")
     }
 
-    fn terminal_event_type(&self) -> &'static str {
+    pub(crate) fn terminal_event_type(&self) -> &'static str {
         match self.status.as_str() {
             "incomplete" => "response.incomplete",
             "failed" | "error" => "response.failed",
@@ -513,7 +513,7 @@ mod tests {
             panic!("colliding namespace member should be rejected");
         };
 
-        assert!(err.to_string().contains("collides with top-level function"));
+        assert!(err.to_string().contains("collides with a declared function tool"));
     }
 
     #[test]

@@ -7,6 +7,7 @@ mod support;
 
 use agentic_core::executor::execute;
 use agentic_core::executor::request::RequestContext;
+use agentic_core::tool::model_visible_namespace_member_name;
 use agentic_core::types::request_response::RequestPayload;
 use agentic_core::types::tools::{FunctionToolParam, NonEmptyToolName};
 use agentic_core::{
@@ -115,6 +116,51 @@ async fn test_single_turn_streaming_emits_response_completed_event() {
         completed["response"]["output"][0]["content"][0]["text"],
         expected_text(t1)
     );
+}
+
+#[tokio::test]
+async fn test_stream_persists_when_client_disconnects_after_completion_event() {
+    let cassette = load_cassette(&format!("{DIR}/resp-single-gpt-4o-streaming.yaml"));
+    let t1 = &cassette.turns[0];
+    let responses = vec![t1, t1];
+    let fixture = TestFixture::new(&responses).await;
+
+    let result = execute(
+        make_request(&t1.request.body.input, true, true, None, None),
+        Arc::clone(&fixture.exec_ctx),
+    )
+    .await
+    .expect("execute");
+    let Either::Right(stream) = result else {
+        panic!("expected streaming response");
+    };
+    let mut stream = Box::pin(stream);
+    let response_id = loop {
+        let Some(chunk) = stream.next().await else {
+            panic!("stream ended before response.completed");
+        };
+        let Some(data) = chunk.trim_end_matches('\n').strip_prefix("data: ") else {
+            continue;
+        };
+        let Ok(event) = serde_json::from_str::<Value>(data) else {
+            continue;
+        };
+        if event["type"] == "response.completed" {
+            break event["response"]["id"].as_str().expect("response id").to_owned();
+        }
+    };
+
+    // Dropping before requesting the next chunk simulates a client disconnect
+    // immediately after receiving the terminal response event.
+    drop(stream);
+
+    let follow_up = execute(
+        make_request("follow up", true, true, Some(response_id), None),
+        Arc::clone(&fixture.exec_ctx),
+    )
+    .await
+    .expect("response must be persisted before response.completed is emitted");
+    assert!(matches!(follow_up, Either::Right(_)));
 }
 
 /// Case 3 — two turns, non-streaming, chained via `previous_response_id`.
@@ -324,7 +370,45 @@ async fn test_codex_namespace_collision_with_top_level_function_is_rejected() {
     };
 
     assert!(
-        err.to_string().contains("collides with top-level function"),
+        err.to_string().contains("collides with a declared function tool"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        fixture.request_bodies().await.is_empty(),
+        "invalid request must fail before calling upstream"
+    );
+}
+
+#[tokio::test]
+async fn test_shortened_namespace_name_collision_with_later_mcp_tool_is_rejected() {
+    let fixture = TestFixture::new_with_responses(vec![text_response("should not be called")]).await;
+    let namespace = "mcp__codex_apps__github";
+    let member = "_remove_reaction_from_pr_review_comment";
+    let shortened_name = model_visible_namespace_member_name(namespace, member);
+    let tools: Vec<ResponsesTool> = serde_json::from_value(serde_json::json!([
+        {
+            "type": "namespace",
+            "name": namespace,
+            "tools": [{"type": "function", "name": member}]
+        },
+        {
+            "type": "mcp",
+            "name": shortened_name,
+            "server_label": "fixture",
+            "server_url": "http://127.0.0.1:1/mcp"
+        }
+    ]))
+    .unwrap();
+
+    let mut request = make_request("remove a reaction", true, false, None, None);
+    request.tools = Some(tools);
+
+    let Err(err) = execute(request, Arc::clone(&fixture.exec_ctx)).await else {
+        panic!("colliding shortened namespace member should be rejected");
+    };
+
+    assert!(
+        err.to_string().contains("collides with a declared MCP tool"),
         "unexpected error: {err}"
     );
     assert!(
